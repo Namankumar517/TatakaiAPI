@@ -7,10 +7,12 @@ export const cf_signatures = [
   '__cf_chl_tk'
 ];
 
-// @ts-ignore
-import { connect } from "puppeteer-real-browser";
 import { Logger } from "../utils/logger.js";
 import { ensureBrowserRuntime } from "./browser-runtime-bootstrap.js";
+import { env } from "../config/env.js";
+
+// ✅ FIX: Lazy load puppeteer only when needed (non-Vercel)
+let connect: any = null;
 
 interface ClearanceResult {
   success: boolean;
@@ -29,7 +31,33 @@ let pageInstance: any = null;
 
 let bypassQueue: Promise<void> = Promise.resolve();
 
+// ✅ FIX: Initialize puppeteer only when needed
+async function initializePuppeteer() {
+  if (connect) return;
+  
+  // Don't load puppeteer on Vercel
+  if (env.ANIWATCH_API_DEPLOYMENT_ENV === 'vercel') {
+    throw new Error('Puppeteer-based CF bypass is not supported on Vercel serverless environment');
+  }
+
+  try {
+    const puppeteerModule = await import("puppeteer-real-browser");
+    connect = puppeteerModule.connect;
+  } catch (e) {
+    throw new Error(`Failed to load puppeteer-real-browser: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
 export async function getCloudflareClearance(targetUrl: string): Promise<ClearanceResult> {
+  // ✅ FIX: Check if running on Vercel
+  if (env.ANIWATCH_API_DEPLOYMENT_ENV === 'vercel') {
+    Logger.warn('CF Bypass', 'Cloudflare bypass requested on Vercel - not supported');
+    return {
+      success: false,
+      error: 'Cloudflare bypass via Puppeteer is not supported on Vercel serverless. Please use alternative method or upgrade to a Node.js-based deployment.'
+    };
+  }
+
   let releaseLock: () => void;
   const nextInLine = new Promise<void>(resolve => { releaseLock = resolve; });
   
@@ -39,6 +67,9 @@ export async function getCloudflareClearance(targetUrl: string): Promise<Clearan
   await waitForPrevious;
 
   try {
+    // ✅ FIX: Initialize puppeteer only when needed
+    await initializePuppeteer();
+
     if (!browserInstance || !browserInstance.isConnected() || !pageInstance || pageInstance.isClosed()) {
       Logger.info("Cold start: Launching persistent browser...");
       if (browserInstance) await browserInstance.close().catch(() => {});
